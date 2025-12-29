@@ -106,13 +106,17 @@ async def get_arrivals(stop_code: str, db: Session = Depends(get_db), limit: int
         )
     
     try:
-        # Get the most recent snapshot timestamp
-        latest_snapshot = db.query(func.max(LuasSnapshot.recorded_at)).scalar()
+        # Get the most recent snapshot timestamp for this stop
+        latest_snapshot = db.query(func.max(LuasSnapshot.recorded_at)).filter(
+            LuasSnapshot.stop_code == stop_code
+        ).scalar()
         
         if not latest_snapshot:
-            raise HTTPException(
-                status_code=404,
-                detail="No forecast data available yet. Polling will start soon."
+            # Return empty arrivals if no data yet
+            return CurrentArrivalsResponse(
+                stop_code=stop_code,
+                last_updated=datetime.utcnow().isoformat(),
+                next_arrivals=[]
             )
         
         # Get forecasts from the latest snapshot, ordered by arrival time
