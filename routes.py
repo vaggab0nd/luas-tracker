@@ -120,8 +120,11 @@ async def get_arrivals(stop_code: str, db: Session = Depends(get_db), limit: int
             )
         
         # Get forecasts from the latest snapshot, ordered by arrival time
+        # Using >= instead of == to handle any timing issues with multiple records
+        # Within the same second
         forecasts = db.query(LuasSnapshot).filter(
-            LuasSnapshot.recorded_at == latest_snapshot,
+            LuasSnapshot.recorded_at >= latest_snapshot - timedelta(seconds=1),
+            LuasSnapshot.recorded_at <= latest_snapshot + timedelta(seconds=1),
             LuasSnapshot.stop_code == stop_code
         ).order_by(
             LuasSnapshot.forecast_arrival_minutes
