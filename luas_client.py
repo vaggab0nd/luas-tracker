@@ -6,7 +6,7 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-LUAS_API_URL = "http://luasforecasts.rpa.ie/xml/get.ashx"
+LUAS_API_URL = "https://luasforecasts.rpa.ie/xml/get.ashx"
 CABRA_STOP_CODE = "cab"
 
 
@@ -26,7 +26,8 @@ async def fetch_luas_forecast(stop_code: str = CABRA_STOP_CODE) -> List[Dict]:
     - due_time: Calculated arrival time (ISO format)
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Use follow_redirects=True to handle 301 redirects from HTTP to HTTPS
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             # Note: We're making the request from backend to work around CORS
             # The API may have IP/origin restrictions
             response = await client.get(
