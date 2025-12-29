@@ -9,6 +9,40 @@ from database import get_db, LuasSnapshot, LuasAccuracy
 
 router = APIRouter()
 
+# Luas stops data - Green and Red lines
+LUAS_STOPS = {
+    # Green Line
+    "bri": {"name": "Broombridge", "line": "Green"},
+    "cab": {"name": "Cabra", "line": "Green"},
+    "con": {"name": "Connolly", "line": "Green"},
+    "bus": {"name": "Busáras", "line": "Green"},
+    "jer": {"name": "Jervis", "line": "Green"},
+    "tem": {"name": "Temple Bar", "line": "Green"},
+    "pow": {"name": "Powercourt", "line": "Green"},
+    "dro": {"name": "Drury Street", "line": "Green"},
+    "fou": {"name": "Four Courts", "line": "Green"},
+    "sim": {"name": "Smithfield", "line": "Green"},
+    "mus": {"name": "Museum", "line": "Green"},
+    "kil": {"name": "Kilmainham", "line": "Green"},
+    "sun": {"name": "Suir Road", "line": "Green"},
+    "gol": {"name": "Goldenbridge", "line": "Green"},
+    "dri": {"name": "Drimnagh", "line": "Green"},
+    "bla": {"name": "Blackhorse", "line": "Green"},
+    "kyo": {"name": "Kylemore", "line": "Green"},
+    "red": {"name": "Red Cow", "line": "Green"},
+    "tal": {"name": "Tallaght", "line": "Green"},
+    
+    # Red Line
+    "che": {"name": "Cheeverstown", "line": "Red"},
+    "cit": {"name": "City West", "line": "Red"},
+    "for": {"name": "Fortunestown", "line": "Red"},
+    "bly": {"name": "Bluebell", "line": "Red"},
+    "kni": {"name": "Knocknaheown", "line": "Red"},
+    "bay": {"name": "Ballyogan", "line": "Red"},
+    "dup": {"name": "Dupont", "line": "Red"},
+    "lep": {"name": "Leopardstown", "line": "Red"},
+}
+
 
 class ForecastResponse(BaseModel):
     destination: str
@@ -26,12 +60,51 @@ class CurrentArrivalsResponse(BaseModel):
     next_arrivals: List[ForecastResponse]
 
 
-@router.get("/arrivals/cabra", response_model=CurrentArrivalsResponse)
-async def get_cabra_arrivals(db: Session = Depends(get_db), limit: int = 3):
+@router.get("/stops")
+async def get_stops():
     """
-    Get the next N upcoming trams for Cabra stop.
+    Get list of all available Luas stops.
+    Returns stops organized by line with their codes.
+    """
+    green_line = [
+        {"code": code, "name": stop["name"], "line": stop["line"]}
+        for code, stop in LUAS_STOPS.items()
+        if stop["line"] == "Green"
+    ]
+    red_line = [
+        {"code": code, "name": stop["name"], "line": stop["line"]}
+        for code, stop in LUAS_STOPS.items()
+        if stop["line"] == "Red"
+    ]
+    
+    return {
+        "stops": {
+            "green": sorted(green_line, key=lambda x: x["name"]),
+            "red": sorted(red_line, key=lambda x: x["name"])
+        }
+    }
+
+
+@router.get("/arrivals/{stop_code}", response_model=CurrentArrivalsResponse)
+async def get_arrivals(stop_code: str, db: Session = Depends(get_db), limit: int = 3):
+    """
+    Get the next N upcoming trams for a given stop.
     Returns the most recent forecast for each unique destination/direction combo.
+    
+    Parameters:
+    - stop_code: Luas stop code (e.g., 'cab' for Cabra, 'tal' for Tallaght)
+    - limit: Number of arrivals to return (default 3)
     """
+    # Normalize stop code to lowercase
+    stop_code = stop_code.lower()
+    
+    # Validate stop code
+    if stop_code not in LUAS_STOPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown stop code: {stop_code}. See /stops for valid codes."
+        )
+    
     try:
         # Get the most recent snapshot timestamp
         latest_snapshot = db.query(func.max(LuasSnapshot.recorded_at)).scalar()
@@ -45,7 +118,7 @@ async def get_cabra_arrivals(db: Session = Depends(get_db), limit: int = 3):
         # Get forecasts from the latest snapshot, ordered by arrival time
         forecasts = db.query(LuasSnapshot).filter(
             LuasSnapshot.recorded_at == latest_snapshot,
-            LuasSnapshot.stop_code == "cab"
+            LuasSnapshot.stop_code == stop_code
         ).order_by(
             LuasSnapshot.forecast_arrival_minutes
         ).limit(limit).all()
@@ -60,14 +133,28 @@ async def get_cabra_arrivals(db: Session = Depends(get_db), limit: int = 3):
             for f in forecasts
         ]
         
+        stop_name = LUAS_STOPS.get(stop_code, {}).get("name", stop_code)
+        
         return CurrentArrivalsResponse(
-            stop_code="cab",
+            stop_code=stop_code,
             last_updated=latest_snapshot.isoformat(),
             next_arrivals=arrivals
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/arrivals/cabra", response_model=CurrentArrivalsResponse)
+async def get_cabra_arrivals(db: Session = Depends(get_db), limit: int = 3):
+    """
+    Get the next N upcoming trams for Cabra stop.
+    Returns the most recent forecast for each unique destination/direction combo.
+    (Kept for backwards compatibility)
+    """
+    return await get_arrivals("cab", db, limit)
 
 
 @router.get("/accuracy/summary")
