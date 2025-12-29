@@ -71,9 +71,9 @@ def parse_luas_xml(xml_content: str) -> List[Dict]:
     try:
         root = ET.fromstring(xml_content)
         
-        # Debug: Log raw XML for first request
-        if len(xml_content) < 500:
-            logger.debug(f"Raw API response: {xml_content}")
+        # Debug: Always log raw XML for debugging
+        logger.info(f"API Response (first 300 chars): {xml_content[:300]}")
+        logger.info(f"Root tag: {root.tag}")
         
         # Navigate the XML structure
         # The actual structure might vary, so we're flexible
