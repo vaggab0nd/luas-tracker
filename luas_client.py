@@ -77,17 +77,25 @@ def parse_luas_xml(xml_content: str) -> List[Dict]:
         
         # Navigate the XML structure - trams are inside <direction> elements
         # <stopInfo><direction name="Inbound"><tram dueMins="10" destination="Destination" /></direction></stopInfo>
+        direction_count = len(root.findall("direction"))
+        logger.info(f"Found {direction_count} direction elements")
+        
         for direction_elem in root.findall("direction"):
             direction_name = direction_elem.get("name", "Unknown")
+            tram_count_in_direction = len(direction_elem.findall("tram"))
+            logger.info(f"Direction '{direction_name}' has {tram_count_in_direction} trams")
             
-            for tram in direction_elem.findall("tram"):
+            for idx, tram in enumerate(direction_elem.findall("tram")):
                 try:
                     # Get attributes from tram element
                     destination = tram.get("destination", "Unknown")
                     due_minutes_str = tram.get("dueMins", "0")
                     
+                    logger.debug(f"Tram {idx+1} in {direction_name}: dest='{destination}', dueMins='{due_minutes_str}'")
+                    
                     # Skip "No trams forecast" entries
                     if destination == "No trams forecast" or not destination or destination == "Unknown":
+                        logger.debug(f"Skipping tram {idx+1}: destination is invalid")
                         continue
                     
                     # Handle dueMins - can be "DUE", a number, or empty
@@ -97,7 +105,7 @@ def parse_luas_xml(xml_content: str) -> List[Dict]:
                         try:
                             due_minutes = int(due_minutes_str)
                         except ValueError:
-                            logger.warning(f"Invalid dueMins value: {due_minutes_str}")
+                            logger.warning(f"Invalid dueMins value: {due_minutes_str}, skipping tram")
                             continue
                     else:
                         due_minutes = 0
@@ -111,14 +119,13 @@ def parse_luas_xml(xml_content: str) -> List[Dict]:
                         "due_minutes": due_minutes,
                         "due_time": due_time.isoformat()
                     })
-                    logger.debug(f"Parsed tram: {destination} ({direction_name}) in {due_minutes}m")
+                    logger.info(f"✓ Parsed tram: {destination} ({direction_name}) in {due_minutes}m")
             
                 except (ValueError, AttributeError) as e:
-                    logger.warning(f"Failed to parse tram element: {e}")
+                    logger.warning(f"Failed to parse tram element {idx+1}: {e}")
                     continue
         
-        if not forecasts:
-            logger.warning(f"No valid trams found in API response")
+        logger.info(f"Total forecasts parsed: {len(forecasts)}")
         
         return forecasts
     
