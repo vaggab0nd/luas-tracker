@@ -75,61 +75,50 @@ def parse_luas_xml(xml_content: str) -> List[Dict]:
         logger.info(f"API Response (first 300 chars): {xml_content[:300]}")
         logger.info(f"Root tag: {root.tag}")
         
-        # Navigate the XML structure
-        # The actual structure might vary, so we're flexible
-        for tram in root.findall(".//tram"):
-            try:
-                destination = tram.findtext("destination", "Unknown")
-                direction = tram.findtext("direction", "Unknown")
-                
-                # Get dueMinutes - handle both int and "Due" special case
-                due_minutes_str = tram.findtext("dueMinutes", "0")
-                if due_minutes_str and due_minutes_str.lower() == "due":
-                    due_minutes = 0
-                else:
-                    try:
-                        due_minutes = int(due_minutes_str or "0")
-                    except ValueError:
-                        logger.warning(f"Invalid dueMinutes value: {due_minutes_str}")
+        # Navigate the XML structure - trams are inside <direction> elements
+        # <stopInfo><direction name="Inbound"><tram dueMins="10" destination="Destination" /></direction></stopInfo>
+        for direction_elem in root.findall("direction"):
+            direction_name = direction_elem.get("name", "Unknown")
+            
+            for tram in direction_elem.findall("tram"):
+                try:
+                    # Get attributes from tram element
+                    destination = tram.get("destination", "Unknown")
+                    due_minutes_str = tram.get("dueMins", "0")
+                    
+                    # Skip "No trams forecast" entries
+                    if destination == "No trams forecast" or not destination or destination == "Unknown":
+                        continue
+                    
+                    # Handle dueMins - can be "DUE", a number, or empty
+                    if due_minutes_str and due_minutes_str.upper() == "DUE":
                         due_minutes = 0
-                
-                due_time_str = tram.findtext("dueTime", "")
-                
-                # Calculate due time
-                if due_time_str and due_time_str.lower() != "due":
-                    try:
-                        due_time = datetime.strptime(due_time_str, "%H:%M")
-                        # Assume same day for now (TODO: handle midnight)
-                        now = datetime.now()
-                        due_time = due_time.replace(
-                            year=now.year,
-                            month=now.month,
-                            day=now.day
-                        )
-                        # If due time is in the past, assume it's tomorrow
-                        if due_time < now:
-                            due_time = due_time + timedelta(days=1)
-                    except ValueError:
-                        due_time = datetime.now() + timedelta(minutes=due_minutes)
-                else:
+                    elif due_minutes_str:
+                        try:
+                            due_minutes = int(due_minutes_str)
+                        except ValueError:
+                            logger.warning(f"Invalid dueMins value: {due_minutes_str}")
+                            continue
+                    else:
+                        due_minutes = 0
+                    
+                    # Calculate due time
                     due_time = datetime.now() + timedelta(minutes=due_minutes)
-                
-                # Only add if we have valid data
-                if destination != "Unknown":
+                    
                     forecasts.append({
                         "destination": destination,
-                        "direction": direction,
+                        "direction": direction_name,
                         "due_minutes": due_minutes,
                         "due_time": due_time.isoformat()
                     })
-                    logger.debug(f"Parsed tram: {destination} in {due_minutes}m (due {due_time_str})")
+                    logger.debug(f"Parsed tram: {destination} ({direction_name}) in {due_minutes}m")
             
-            except (ValueError, AttributeError) as e:
-                logger.warning(f"Failed to parse tram element: {e}")
-                continue
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Failed to parse tram element: {e}")
+                    continue
         
         if not forecasts:
-            logger.warning(f"No trams found in API response (checked {len(list(root.findall('.//tram')))} elements)")
+            logger.warning(f"No valid trams found in API response")
         
         return forecasts
     
