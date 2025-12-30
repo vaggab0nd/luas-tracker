@@ -10,6 +10,8 @@ from database import get_db, LuasSnapshot, LuasAccuracy
 
 logger = logging.getLogger(__name__)
 
+router = APIRouter()
+
 # Luas stops data - Green and Red lines
 LUAS_STOPS = {
     # Green Line
