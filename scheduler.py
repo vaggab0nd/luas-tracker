@@ -26,12 +26,13 @@ STOPS_TO_POLL = [
 
 def calculate_accuracy_from_snapshots():
     """
-    Calculate forecast accuracy by comparing snapshots.
+    Calculate forecast accuracy by comparing forecasts across polls.
     
-    Algorithm:
-    - Look for the same tram (destination + direction) in consecutive polls
-    - When forecast_arrival_minutes approaches 0, compare original forecast to elapsed time
-    - Store accuracy delta in LuasAccuracy table
+    Better algorithm:
+    - For each tram (destination + direction), look at forecast progression
+    - When a tram "arrives" (forecast goes from positive to 0/negative)
+    - Calculate actual time to arrival and compare to original forecast
+    - Store accuracy delta
     
     Runs every 5 minutes to process recently arrived trams
     """
@@ -61,30 +62,48 @@ def calculate_accuracy_from_snapshots():
         
         # For each tram type, look for ones that "arrived"
         for (stop_code, direction, destination), polls in tram_history.items():
-            # Sort by recorded_at
+            # Sort by recorded_at time
             polls.sort(key=lambda x: x.recorded_at)
             
-            # Look for transitions from predicted to arriving (forecast_arrival_minutes going to 0 or negative)
+            if len(polls) < 2:
+                continue
+            
+            # Look for the transition: forecast goes from > 0 to <= 0
+            # This indicates the tram has arrived (or is about to)
             for i in range(1, len(polls)):
                 prev_poll = polls[i-1]
                 curr_poll = polls[i]
                 
-                # Check if this tram is arriving now (forecast went to 0 or negative)
+                # Check if forecast went to arrival (0 or negative)
                 if (prev_poll.forecast_arrival_minutes > 0 and 
                     curr_poll.forecast_arrival_minutes <= 0):
                     
-                    # Time elapsed between these two forecasts (in minutes)
-                    time_elapsed_seconds = (curr_poll.recorded_at - prev_poll.recorded_at).total_seconds()
-                    time_elapsed_minutes = time_elapsed_seconds / 60
+                    # The tram arrived between prev_poll and curr_poll
+                    # Time from prev_poll to arrival is approximately prev_poll.forecast_arrival_minutes
+                    # But we need to account for the actual time elapsed
                     
-                    # Original forecast was prev_poll.forecast_arrival_minutes
-                    # Actual time to arrival was approximately time_elapsed_minutes
-                    # Accuracy delta: positive = late, negative = early
-                    accuracy_delta = int(round(time_elapsed_minutes - prev_poll.forecast_arrival_minutes))
+                    # Original forecast from prev_poll: "arriving in X minutes"
+                    original_forecast_minutes = prev_poll.forecast_arrival_minutes
                     
-                    # Don't record if it's impossible (more than 60 min difference = data error)
-                    if abs(accuracy_delta) > 60:
-                        logger.warning(f"Skipping accuracy (likely data error): {destination} delta={accuracy_delta}")
+                    # Actual arrival time estimate:
+                    # The tram was forecast to arrive in X minutes at prev_poll time
+                    # So actual arrival was around: prev_poll.recorded_at + X minutes
+                    forecast_arrival_time = prev_poll.recorded_at + timedelta(minutes=original_forecast_minutes)
+                    
+                    # Actual arrival was somewhere between prev_poll and curr_poll
+                    # Best estimate: somewhere around curr_poll.recorded_at (or slightly before)
+                    # But use prev_poll + forecast time as our "actual"
+                    actual_arrival_time = curr_poll.recorded_at
+                    
+                    # Calculate delta: how many minutes off were we?
+                    time_delta_seconds = (actual_arrival_time - forecast_arrival_time).total_seconds()
+                    time_delta_minutes = time_delta_seconds / 60
+                    accuracy_delta = int(round(time_delta_minutes))
+                    
+                    # Sanity check: delta shouldn't be more than ~2 minutes per poll period
+                    # If it is, it's likely a data quality issue
+                    if abs(accuracy_delta) > 5:
+                        logger.warning(f"Skipping accuracy (likely data error): {destination} delta={accuracy_delta}m (forecast={original_forecast_minutes}m)")
                         continue
                     
                     # Check if we already recorded this accuracy (avoid duplicates)
@@ -92,37 +111,46 @@ def calculate_accuracy_from_snapshots():
                         LuasAccuracy.stop_code == stop_code,
                         LuasAccuracy.direction == direction,
                         LuasAccuracy.destination == destination,
-                        LuasAccuracy.forecasted_minutes == prev_poll.forecast_arrival_minutes,
-                        LuasAccuracy.calculated_at >= (curr_poll.recorded_at - timedelta(seconds=60))
+                        LuasAccuracy.forecasted_minutes == original_forecast_minutes,
+                        LuasAccuracy.calculated_at >= (curr_poll.recorded_at - timedelta(minutes=10))
                     ).first()
                     
                     if existing:
                         continue
                     
+                    # Calculate actual minutes (time elapsed from prev_poll to actual arrival)
+                    actual_minutes = int(round((actual_arrival_time - prev_poll.recorded_at).total_seconds() / 60))
+                    
                     accuracy_record = LuasAccuracy(
                         stop_code=stop_code,
                         direction=direction,
                         destination=destination,
-                        forecasted_minutes=prev_poll.forecast_arrival_minutes,
-                        actual_minutes=int(round(time_elapsed_minutes)),
+                        forecasted_minutes=original_forecast_minutes,
+                        actual_minutes=actual_minutes,
                         accuracy_delta=accuracy_delta,
                         calculated_at=datetime.utcnow()
                     )
                     
                     db.add(accuracy_record)
                     accuracy_count += 1
-                    logger.info(f"Recorded accuracy: {destination} ({direction}) - forecasted {prev_poll.forecast_arrival_minutes}m, actual {int(round(time_elapsed_minutes))}m (delta: {accuracy_delta}m)")
+                    status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
+                    logger.info(f"Recorded accuracy: {destination} ({direction}) - forecast {original_forecast_minutes}m, actual {actual_minutes}m ({status})")
         
         if accuracy_count > 0:
             db.commit()
             logger.info(f"Calculated and stored {accuracy_count} accuracy records")
+        else:
+            logger.debug("No new accuracy records calculated")
         
         db.close()
     
     except Exception as e:
         if 'db' in locals():
-            db.rollback()
-            db.close()
+            try:
+                db.rollback()
+                db.close()
+            except:
+                pass
         logger.error(f"Error calculating accuracy: {e}")
 
 
