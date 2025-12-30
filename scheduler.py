@@ -131,16 +131,21 @@ def calculate_accuracy_from_snapshots():
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
                     logger.info(f"✓ Accuracy: {destination} ({direction}) - forecast {original_forecast_minutes}m, actual {actual_minutes}m ({status})")
         
-        logger.info(f"About to commit {accuracy_count} records...")
+        logger.info(f"About to commit {accuracy_count} accuracy records...")
         if accuracy_count > 0:
             try:
+                logger.info(f"Attempting db.commit() with {accuracy_count} pending records...")
                 db.commit()
-                logger.info(f"✓ SUCCESS: Stored {accuracy_count} accuracy records to database")
-            except Exception as e:
-                logger.error(f"FAILED TO COMMIT: {e}", exc_info=True)
-                db.rollback()
+                logger.info(f"✓ SUCCESS: db.commit() completed. Records should now be in database.")
+            except Exception as commit_error:
+                logger.error(f"❌ COMMIT FAILED: {type(commit_error).__name__}: {commit_error}", exc_info=True)
+                try:
+                    db.rollback()
+                    logger.info("Rollback completed")
+                except:
+                    logger.error("Rollback also failed")
         else:
-            logger.debug("No new accuracy records to commit this cycle")
+            logger.info("No accuracy records to commit this cycle")
         
         db.close()
     
