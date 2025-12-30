@@ -79,20 +79,14 @@ def calculate_accuracy_from_snapshots():
                     curr_poll.forecast_arrival_minutes <= 0):
                     
                     # The tram arrived between prev_poll and curr_poll
-                    # Time from prev_poll to arrival is approximately prev_poll.forecast_arrival_minutes
-                    # But we need to account for the actual time elapsed
-                    
                     # Original forecast from prev_poll: "arriving in X minutes"
                     original_forecast_minutes = prev_poll.forecast_arrival_minutes
                     
                     # Actual arrival time estimate:
                     # The tram was forecast to arrive in X minutes at prev_poll time
-                    # So actual arrival was around: prev_poll.recorded_at + X minutes
                     forecast_arrival_time = prev_poll.recorded_at + timedelta(minutes=original_forecast_minutes)
                     
-                    # Actual arrival was somewhere between prev_poll and curr_poll
-                    # Best estimate: somewhere around curr_poll.recorded_at (or slightly before)
-                    # But use prev_poll + forecast time as our "actual"
+                    # Actual arrival was between prev_poll and curr_poll
                     actual_arrival_time = curr_poll.recorded_at
                     
                     # Calculate delta: how many minutes off were we?
@@ -101,21 +95,22 @@ def calculate_accuracy_from_snapshots():
                     accuracy_delta = int(round(time_delta_minutes))
                     
                     # Sanity check: delta shouldn't be more than ~2 minutes per poll period
-                    # If it is, it's likely a data quality issue
                     if abs(accuracy_delta) > 5:
-                        logger.warning(f"Skipping accuracy (likely data error): {destination} delta={accuracy_delta}m (forecast={original_forecast_minutes}m)")
+                        logger.debug(f"Skipping accuracy (data error): {destination} delta={accuracy_delta}m")
                         continue
                     
-                    # Check if we already recorded this accuracy (avoid duplicates)
+                    # Check if we already recorded this (only in last 5 minutes to avoid duplicates)
+                    # Use a 5-minute window since job runs every 5 minutes
                     existing = db.query(LuasAccuracy).filter(
                         LuasAccuracy.stop_code == stop_code,
                         LuasAccuracy.direction == direction,
                         LuasAccuracy.destination == destination,
                         LuasAccuracy.forecasted_minutes == original_forecast_minutes,
-                        LuasAccuracy.calculated_at >= (curr_poll.recorded_at - timedelta(minutes=10))
+                        LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(minutes=5))
                     ).first()
                     
                     if existing:
+                        logger.debug(f"Duplicate accuracy record skipped: {destination}")
                         continue
                     
                     # Calculate actual minutes (time elapsed from prev_poll to actual arrival)
@@ -134,13 +129,13 @@ def calculate_accuracy_from_snapshots():
                     db.add(accuracy_record)
                     accuracy_count += 1
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
-                    logger.info(f"Recorded accuracy: {destination} ({direction}) - forecast {original_forecast_minutes}m, actual {actual_minutes}m ({status})")
+                    logger.info(f"✓ Accuracy: {destination} ({direction}) - forecast {original_forecast_minutes}m, actual {actual_minutes}m ({status})")
         
         if accuracy_count > 0:
             db.commit()
-            logger.info(f"Calculated and stored {accuracy_count} accuracy records")
+            logger.info(f"✓ Calculated and stored {accuracy_count} NEW accuracy records")
         else:
-            logger.debug("No new accuracy records calculated")
+            logger.debug("No new accuracy records calculated this cycle")
         
         db.close()
     
