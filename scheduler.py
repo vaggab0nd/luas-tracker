@@ -66,11 +66,10 @@ def calculate_accuracy_from_snapshots():
             # Sort by recorded_at time
             polls.sort(key=lambda x: x.recorded_at)
 
-            # Debug logging for Cabra
-            if stop_code == "cab":
-                logger.info(f"DEBUG Cabra: {destination} ({direction}) - {len(polls)} polls found")
-                if len(polls) >= 2:
-                    logger.info(f"  Latest forecasts: {[p.forecast_arrival_minutes for p in polls[-5:]]}")
+            # Debug logging for all stops
+            logger.info(f"DEBUG {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
+            if len(polls) >= 2:
+                logger.info(f"  Latest forecasts: {[p.forecast_arrival_minutes for p in polls[-5:]]}")
 
             if len(polls) < 2:
                 continue
@@ -85,6 +84,7 @@ def calculate_accuracy_from_snapshots():
                 # Skip if polls are too far apart (more than 2 minutes = missed polls)
                 time_between_polls = (curr_poll.recorded_at - prev_poll.recorded_at).total_seconds() / 60
                 if time_between_polls > 2:
+                    logger.debug(f"DEBUG {stop_code}: Skipping {destination} - polls {time_between_polls:.1f}m apart (>2m threshold)")
                     continue
 
                 # Track multiple transition types for better coverage:
@@ -100,28 +100,21 @@ def calculate_accuracy_from_snapshots():
                     curr_poll.forecast_arrival_minutes == 0):
                     is_arrival = True
                     transition_type = "arrival"
-
-                    # Debug logging for Cabra arrivals
-                    if stop_code == "cab":
-                        logger.info(f"DEBUG Cabra: ARRIVAL DETECTED! {destination} ({direction}) {prev_poll.forecast_arrival_minutes}→0")
+                    logger.info(f"DEBUG {stop_code}: ARRIVAL DETECTED! {destination} ({direction}) {prev_poll.forecast_arrival_minutes}→0")
 
                 # Secondary: Near-arrival tracking (2 to 1) - gives more data but less precise
                 elif (prev_poll.forecast_arrival_minutes == 2 and
                       curr_poll.forecast_arrival_minutes == 1):
                     is_arrival = True
                     transition_type = "near_arrival_2to1"
-
-                    if stop_code == "cab":
-                        logger.info(f"DEBUG Cabra: Near-arrival detected (2→1): {destination} ({direction})")
+                    logger.info(f"DEBUG {stop_code}: Near-arrival detected (2→1): {destination} ({direction})")
 
                 # Tertiary: Imminent arrival (1 to 0) - very accurate
                 elif (prev_poll.forecast_arrival_minutes == 1 and
                       curr_poll.forecast_arrival_minutes == 0):
                     is_arrival = True
                     transition_type = "imminent_arrival_1to0"
-
-                    if stop_code == "cab":
-                        logger.info(f"DEBUG Cabra: Imminent arrival detected (1→0): {destination} ({direction})")
+                    logger.info(f"DEBUG {stop_code}: Imminent arrival detected (1→0): {destination} ({direction})")
 
                 if is_arrival:
                     # The tram arrived between prev_poll and curr_poll
