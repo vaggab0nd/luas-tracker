@@ -337,6 +337,9 @@ async def debug_accuracy_by_stop(db: Session = Depends(get_db)):
             for stop, records in by_stop.items()
         }
     }
+
+
+@router.get("/debug/accuracy/count")
 async def debug_accuracy_count(db: Session = Depends(get_db)):
     """Debug endpoint to see how many accuracy records exist"""
     total_count = db.query(func.count(LuasAccuracy.id)).scalar()
