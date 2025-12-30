@@ -1,11 +1,11 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 
 from luas_client import fetch_luas_forecast, LuasAPIError
-from database import SessionLocal, LuasSnapshot
+from database import SessionLocal, LuasSnapshot, LuasAccuracy
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ def calculate_accuracy_from_snapshots():
         
         if not recent_snapshots:
             logger.debug("No snapshots to calculate accuracy from")
+            db.close()
             return
         
         # Group by (stop, direction, destination) to track same tram across polls
@@ -119,8 +120,13 @@ def calculate_accuracy_from_snapshots():
         db.close()
     
     except Exception as e:
-        db.rollback() if 'db' in locals() else None
+        if 'db' in locals():
+            db.rollback()
+            db.close()
         logger.error(f"Error calculating accuracy: {e}")
+
+
+def poll_luas_and_store():
     """
     Background job that runs every 30 seconds.
     Fetches latest forecasts for all configured stops and stores them in the database.
@@ -170,9 +176,9 @@ def calculate_accuracy_from_snapshots():
 
 def start_luas_polling(scheduler: BackgroundScheduler):
     """
-    Start the background polling job.
-    Polls the Luas API every 30 seconds for all configured stops.
-    Also calculates accuracy every 5 minutes.
+    Start the background polling jobs.
+    - Polls the Luas API every 30 seconds for all configured stops
+    - Calculates accuracy every 5 minutes
     """
     scheduler.add_job(
         poll_luas_and_store,
