@@ -213,23 +213,29 @@ def start_luas_polling(scheduler: BackgroundScheduler):
     - Polls the Luas API every 30 seconds for all configured stops
     - Calculates accuracy every 5 minutes
     """
-    scheduler.add_job(
-        poll_luas_and_store,
-        "interval",
-        seconds=30,
-        id="luas_polling",
-        name="Poll Luas API and store forecasts for all stops",
-        replace_existing=True
-    )
-    logger.info("Luas polling job scheduled (every 30 seconds for multiple stops)")
+    try:
+        scheduler.add_job(
+            poll_luas_and_store,
+            "interval",
+            seconds=30,
+            id="luas_polling",
+            name="Poll Luas API and store forecasts for all stops",
+            replace_existing=True
+        )
+        logger.info("✓ Luas polling job scheduled (every 30 seconds)")
+    except Exception as e:
+        logger.error(f"❌ FAILED to schedule luas_polling: {e}", exc_info=True)
     
     # Add accuracy calculation job
-    scheduler.add_job(
-        calculate_accuracy_from_snapshots,
-        "interval",
-        minutes=5,
-        id="accuracy_calculation",
-        name="Calculate forecast accuracy from snapshots",
-        replace_existing=True
-    )
-    logger.info("Accuracy calculation job scheduled (every 5 minutes)")
+    try:
+        scheduler.add_job(
+            calculate_accuracy_from_snapshots,
+            "interval",
+            minutes=5,
+            id="accuracy_calculation",
+            name="Calculate forecast accuracy from snapshots",
+            replace_existing=True
+        )
+        logger.info("✓ Accuracy calculation job scheduled (every 5 minutes)")
+    except Exception as e:
+        logger.error(f"❌ FAILED to schedule accuracy_calculation: {e}", exc_info=True)
