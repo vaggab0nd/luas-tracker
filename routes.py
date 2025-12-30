@@ -175,6 +175,8 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
     - stop_code: Stop code (cab, con, tal, fou, jer, bri, bus, lep, dro, tem)
     - hours: Number of hours to look back (default 24)
     """
+    logger.info(f"GET /accuracy/summary called with stop_code={stop_code}, hours={hours}")
+    
     try:
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
         
@@ -193,6 +195,8 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
             LuasAccuracy.destination,
             LuasAccuracy.direction
         ).all()
+        
+        logger.info(f"Found {len(accuracy_data)} accuracy records for stop {stop_code}")
         
         if not accuracy_data:
             return {
@@ -219,6 +223,7 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
         }
     
     except Exception as e:
+        logger.error(f"Error in accuracy/summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -309,7 +314,29 @@ async def calculate_accuracy(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/debug/accuracy/count")
+@router.get("/debug/accuracy/by-stop")
+async def debug_accuracy_by_stop(db: Session = Depends(get_db)):
+    """Debug endpoint to see accuracy records by stop"""
+    from collections import defaultdict
+    
+    all_records = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(100).all()
+    
+    by_stop = defaultdict(list)
+    for record in all_records:
+        by_stop[record.stop_code].append({
+            "destination": record.destination,
+            "direction": record.direction,
+            "delta": record.accuracy_delta,
+            "calculated_at": record.calculated_at.isoformat()
+        })
+    
+    return {
+        "total_records": len(all_records),
+        "by_stop": {
+            stop: records[:5]  # First 5 for each stop
+            for stop, records in by_stop.items()
+        }
+    }
 async def debug_accuracy_count(db: Session = Depends(get_db)):
     """Debug endpoint to see how many accuracy records exist"""
     total_count = db.query(func.count(LuasAccuracy.id)).scalar()
