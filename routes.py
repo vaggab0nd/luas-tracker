@@ -304,7 +304,32 @@ async def calculate_accuracy(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/metrics/accuracy")
+@router.get("/debug/accuracy/count")
+async def debug_accuracy_count(db: Session = Depends(get_db)):
+    """Debug endpoint to see how many accuracy records exist"""
+    total_count = db.query(func.count(LuasAccuracy.id)).scalar()
+    recent_count = db.query(func.count(LuasAccuracy.id)).filter(
+        LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(hours=24))
+    ).scalar()
+    
+    # Get sample records
+    samples = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(5).all()
+    
+    return {
+        "total_accuracy_records": total_count,
+        "records_in_last_24h": recent_count,
+        "sample_records": [
+            {
+                "destination": s.destination,
+                "direction": s.direction,
+                "forecasted": s.forecasted_minutes,
+                "actual": s.actual_minutes,
+                "delta": s.accuracy_delta,
+                "calculated_at": s.calculated_at.isoformat()
+            }
+            for s in samples
+        ]
+    }
 async def get_accuracy_metrics(db: Session = Depends(get_db), stop_code: str = "cab", hours: int = 24):
     """
     Get accuracy metrics for a specific stop over a time period.
