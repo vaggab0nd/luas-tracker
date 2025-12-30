@@ -4,10 +4,11 @@ from sqlalchemy import desc, func
 from datetime import datetime, timedelta
 from typing import List
 from pydantic import BaseModel
+import logging
 
 from database import get_db, LuasSnapshot, LuasAccuracy
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Luas stops data - Green and Red lines
 LUAS_STOPS = {
@@ -214,15 +215,185 @@ async def get_accuracy_summary(db: Session = Depends(get_db), hours: int = 24):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/stats")
-async def get_stats(db: Session = Depends(get_db)):
+@router.post("/accuracy/calculate")
+async def calculate_accuracy(db: Session = Depends(get_db)):
     """
-    Get general stats about the system.
-    """
-    total_snapshots = db.query(func.count(LuasSnapshot.id)).scalar()
-    latest_snapshot = db.query(func.max(LuasSnapshot.recorded_at)).scalar()
+    Calculate forecast accuracy by comparing forecasts across polls.
     
-    return {
-        "total_snapshots_stored": total_snapshots,
-        "latest_poll": latest_snapshot.isoformat() if latest_snapshot else None
-    }
+    Algorithm:
+    1. For each unique tram (destination + direction)
+    2. Look at forecasts from previous polls
+    3. When a tram "arrives" (forecast_arrival_minutes approaches 0)
+    4. Compare original forecast to actual time taken
+    5. Store accuracy delta
+    
+    This runs periodically to populate LuasAccuracy table.
+    """
+    try:
+        # Get snapshots from the last hour
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        
+        snapshots = db.query(LuasSnapshot).filter(
+            LuasSnapshot.recorded_at >= one_hour_ago
+        ).all()
+        
+        if not snapshots:
+            return {"message": "No data to calculate accuracy from", "calculated": 0}
+        
+        accuracy_records = []
+        
+        # Group snapshots by stop, direction, destination, and forecast arrival time
+        # This helps us track the same "train" across multiple polls
+        from collections import defaultdict
+        tram_history = defaultdict(list)
+        
+        for snapshot in snapshots:
+            key = (snapshot.stop_code, snapshot.direction, snapshot.destination)
+            tram_history[key].append(snapshot)
+        
+        # For each tram, look for ones that "arrived" (forecast went to 0 or negative)
+        for (stop_code, direction, destination), poll_history in tram_history.items():
+            # Sort by recorded_at to see progression
+            poll_history.sort(key=lambda x: x.recorded_at)
+            
+            # Look for trams that went from predicted to arriving
+            for i in range(1, len(poll_history)):
+                prev = poll_history[i-1]
+                curr = poll_history[i]
+                
+                # Check if this is the same "train" (similar forecast times)
+                # and it's getting closer to arrival
+                if (prev.forecast_arrival_minutes > 0 and 
+                    curr.forecast_arrival_minutes == 0):
+                    
+                    # Time elapsed between forecasts
+                    time_elapsed = (curr.recorded_at - prev.recorded_at).total_seconds() / 60
+                    
+                    # Original forecast was prev.forecast_arrival_minutes minutes
+                    # Actual time to arrival was approximately time_elapsed
+                    accuracy_delta = int(time_elapsed - prev.forecast_arrival_minutes)
+                    
+                    accuracy = LuasAccuracy(
+                        stop_code=stop_code,
+                        direction=direction,
+                        destination=destination,
+                        forecasted_minutes=prev.forecast_arrival_minutes,
+                        actual_minutes=int(time_elapsed),
+                        accuracy_delta=accuracy_delta,
+                        calculated_at=datetime.utcnow()
+                    )
+                    accuracy_records.append(accuracy)
+        
+        # Store all accuracy records
+        if accuracy_records:
+            db.add_all(accuracy_records)
+            db.commit()
+            logger.info(f"Calculated and stored {len(accuracy_records)} accuracy records")
+        
+        return {
+            "message": "Accuracy calculation complete",
+            "calculated": len(accuracy_records),
+            "period": "last 1 hour"
+        }
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error calculating accuracy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/metrics/accuracy")
+async def get_accuracy_metrics(db: Session = Depends(get_db), stop_code: str = "cab", hours: int = 24):
+    """
+    Get accuracy metrics for a specific stop over a time period.
+    
+    Returns:
+    - Overall accuracy
+    - By destination
+    - By direction
+    - Trend over time
+    """
+    try:
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        
+        # Get all accuracy records for this stop and period
+        accuracy_data = db.query(LuasAccuracy).filter(
+            LuasAccuracy.stop_code == stop_code,
+            LuasAccuracy.calculated_at >= cutoff_time
+        ).all()
+        
+        if not accuracy_data:
+            return {
+                "stop_code": stop_code,
+                "period_hours": hours,
+                "message": "No accuracy data available yet",
+                "overall": None,
+                "by_destination": [],
+                "trend": []
+            }
+        
+        # Calculate overall metrics
+        all_deltas = [a.accuracy_delta for a in accuracy_data]
+        avg_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
+        
+        # Count on-time, early, late
+        on_time_count = sum(1 for d in all_deltas if d == 0)
+        early_count = sum(1 for d in all_deltas if d < 0)
+        late_count = sum(1 for d in all_deltas if d > 0)
+        
+        # Metrics by destination
+        from collections import defaultdict
+        by_dest = defaultdict(list)
+        for record in accuracy_data:
+            by_dest[record.destination].append(record.accuracy_delta)
+        
+        dest_metrics = []
+        for destination, deltas in by_dest.items():
+            dest_metrics.append({
+                "destination": destination,
+                "measurements": len(deltas),
+                "avg_accuracy_minutes": round(sum(deltas) / len(deltas), 2),
+                "min_delta": min(deltas),
+                "max_delta": max(deltas),
+                "on_time_pct": round(sum(1 for d in deltas if d == 0) / len(deltas) * 100, 1)
+            })
+        
+        # Sort by measurements count (most tested destinations first)
+        dest_metrics.sort(key=lambda x: x["measurements"], reverse=True)
+        
+        # Hourly trend
+        hourly_data = defaultdict(list)
+        for record in accuracy_data:
+            hour_key = record.calculated_at.strftime("%Y-%m-%d %H:00")
+            hourly_data[hour_key].append(record.accuracy_delta)
+        
+        trend = []
+        for hour_key in sorted(hourly_data.keys()):
+            deltas = hourly_data[hour_key]
+            trend.append({
+                "timestamp": hour_key,
+                "avg_accuracy": round(sum(deltas) / len(deltas), 2),
+                "measurements": len(deltas)
+            })
+        
+        return {
+            "stop_code": stop_code,
+            "period_hours": hours,
+            "total_measurements": len(accuracy_data),
+            "overall": {
+                "avg_accuracy_minutes": round(avg_delta, 2),
+                "on_time_pct": round(on_time_count / len(accuracy_data) * 100, 1),
+                "early_pct": round(early_count / len(accuracy_data) * 100, 1),
+                "late_pct": round(late_count / len(accuracy_data) * 100, 1),
+                "interpretation": (
+                    "On time" if abs(avg_delta) < 1 else
+                    f"Average {abs(avg_delta):.1f}m {'early' if avg_delta < 0 else 'late'}"
+                )
+            },
+            "by_destination": dest_metrics,
+            "trend": trend
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting accuracy metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
