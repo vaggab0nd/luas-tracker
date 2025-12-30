@@ -168,15 +168,17 @@ async def get_cabra_arrivals(db: Session = Depends(get_db), limit: int = 3):
 
 
 @router.get("/accuracy/summary")
-async def get_accuracy_summary(db: Session = Depends(get_db), hours: int = 24):
+async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "cab", hours: int = 24):
     """
-    Get forecast accuracy metrics for the last N hours.
-    Shows average accuracy by destination/direction.
+    Get forecast accuracy metrics for a specific stop.
+    Parameters:
+    - stop_code: Stop code (cab, con, tal, fou, jer, bri, bus, lep, dro, tem)
+    - hours: Number of hours to look back (default 24)
     """
     try:
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
         
-        # Query accuracy data grouped by destination/direction
+        # Query accuracy data grouped by destination/direction for the specified stop
         accuracy_data = db.query(
             LuasAccuracy.destination,
             LuasAccuracy.direction,
@@ -185,7 +187,7 @@ async def get_accuracy_summary(db: Session = Depends(get_db), hours: int = 24):
             func.min(LuasAccuracy.accuracy_delta).label("min_delta"),
             func.max(LuasAccuracy.accuracy_delta).label("max_delta")
         ).filter(
-            LuasAccuracy.stop_code == "cab",
+            LuasAccuracy.stop_code == stop_code,
             LuasAccuracy.calculated_at >= cutoff_time
         ).group_by(
             LuasAccuracy.destination,
@@ -194,11 +196,14 @@ async def get_accuracy_summary(db: Session = Depends(get_db), hours: int = 24):
         
         if not accuracy_data:
             return {
+                "stop_code": stop_code,
+                "period_hours": hours,
                 "message": "No accuracy data available yet",
                 "data": []
             }
         
         return {
+            "stop_code": stop_code,
             "period_hours": hours,
             "data": [
                 {
@@ -330,6 +335,9 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
             for s in samples
         ]
     }
+
+
+@router.get("/metrics/accuracy")
 async def get_accuracy_metrics(db: Session = Depends(get_db), stop_code: str = "cab", hours: int = 24):
     """
     Get accuracy metrics for a specific stop over a time period.
