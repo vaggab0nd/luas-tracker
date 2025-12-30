@@ -150,11 +150,50 @@ To enable:
 2. GitHub will automatically run tests on each push
 3. Tests must pass before merging PRs (optional protection rule)
 
+## Accuracy Calculation Improvements (2025-12-30)
+
+The accuracy calculation algorithm was enhanced to better capture arrival events, especially for stops with fewer tram frequencies like Cabra:
+
+### Changes Made:
+
+1. **Increased Calculation Frequency**: Changed from every 5 minutes to **every 1 minute**
+   - More frequent checks = less chance of missing arrival transitions
+   - Duplicate detection window reduced from 5 minutes to 2 minutes
+
+2. **Multi-Level Arrival Detection**: Now tracks three types of transitions:
+   - **Primary**: `>0 → 0` (standard arrival - most accurate)
+   - **Secondary**: `2 → 1` (near-arrival - more data points)
+   - **Tertiary**: `1 → 0` (imminent arrival - very precise)
+
+3. **Cabra-Specific Debug Logging**: Added detailed logging for Cabra stop to diagnose why accuracy data wasn't being captured:
+   - Logs poll counts for each destination/direction
+   - Logs forecast progression for last 5 polls
+   - Logs when arrival transitions are detected
+
+4. **Poll Timing Validation**: Skip accuracy calculations when polls are >2 minutes apart (indicates missed polling cycles)
+
+### Why Cabra Was Returning Empty Data:
+
+The `/accuracy/summary?stop_code=cab` endpoint was correctly working but returning empty data because:
+- No accuracy records existed for Cabra in the database
+- The previous algorithm only detected `>0 → 0` transitions with 5-minute checks
+- Cabra has lower tram frequency, so fewer arrival events were captured
+- The new multi-level detection significantly increases data capture
+
+### Testing the Fix:
+
+After deploying these changes, monitor logs for:
+```
+DEBUG Cabra: [destination] ([direction]) - [N] polls found
+DEBUG Cabra: ARRIVAL DETECTED! [destination] ([direction]) [X]→0
+✓ Accuracy [transition_type]: [destination] ([direction]) at cab - forecast Xm, actual Ym ([status])
+```
+
 ## Potential Next Steps
 
 1. **Integration Tests**: Test full API endpoints with mock database
 2. **Performance Tests**: Ensure XML parsing is fast enough
-3. **Accuracy Algorithm Tests**: When you implement forecast accuracy tracking
+3. **Accuracy Algorithm Tests**: Test the new multi-level arrival detection logic
 4. **Database Tests**: Test data storage and querying
 
 ## References

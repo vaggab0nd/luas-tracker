@@ -53,8 +53,9 @@ def calculate_accuracy_from_snapshots():
         # Group by (stop, direction, destination) to track same tram across polls
         from collections import defaultdict
         tram_history = defaultdict(list)
-        
+
         for snapshot in recent_snapshots:
+            # Group by stop/direction/destination to track tram progression
             key = (snapshot.stop_code, snapshot.direction, snapshot.destination)
             tram_history[key].append(snapshot)
         
@@ -64,64 +65,101 @@ def calculate_accuracy_from_snapshots():
         for (stop_code, direction, destination), polls in tram_history.items():
             # Sort by recorded_at time
             polls.sort(key=lambda x: x.recorded_at)
-            
+
+            # Debug logging for Cabra
+            if stop_code == "cab":
+                logger.info(f"DEBUG Cabra: {destination} ({direction}) - {len(polls)} polls found")
+                if len(polls) >= 2:
+                    logger.info(f"  Latest forecasts: {[p.forecast_arrival_minutes for p in polls[-5:]]}")
+
             if len(polls) < 2:
                 continue
             
-            # Look for the transition: forecast goes from > 0 to <= 0
-            # This indicates the tram has arrived (or is about to)
+            # Look for trams that went from being tracked to arriving (forecast decreased to 0)
+            # Strategy: Find a tram that had a forecast, then in a later poll shows as "DUE" (0 minutes)
+            # Also track near-arrivals (2→1, 1→0) to get more granular data
             for i in range(1, len(polls)):
                 prev_poll = polls[i-1]
                 curr_poll = polls[i]
-                
-                # Check if forecast went to arrival (0 or negative)
-                if (prev_poll.forecast_arrival_minutes > 0 and 
-                    curr_poll.forecast_arrival_minutes <= 0):
-                    
+
+                # Skip if polls are too far apart (more than 2 minutes = missed polls)
+                time_between_polls = (curr_poll.recorded_at - prev_poll.recorded_at).total_seconds() / 60
+                if time_between_polls > 2:
+                    continue
+
+                # Track multiple transition types for better coverage:
+                # 1. Standard arrival: >0 → 0 (most accurate)
+                # 2. Near-arrival: 2 → 1 (gives us more data points)
+                # 3. Imminent arrival: 1 → 0 (very close to actual)
+
+                is_arrival = False
+                transition_type = None
+
+                # Primary: Standard arrival detection (>0 to 0)
+                if (prev_poll.forecast_arrival_minutes > 0 and
+                    curr_poll.forecast_arrival_minutes == 0):
+                    is_arrival = True
+                    transition_type = "arrival"
+
+                    # Debug logging for Cabra arrivals
+                    if stop_code == "cab":
+                        logger.info(f"DEBUG Cabra: ARRIVAL DETECTED! {destination} ({direction}) {prev_poll.forecast_arrival_minutes}→0")
+
+                # Secondary: Near-arrival tracking (2 to 1) - gives more data but less precise
+                elif (prev_poll.forecast_arrival_minutes == 2 and
+                      curr_poll.forecast_arrival_minutes == 1):
+                    is_arrival = True
+                    transition_type = "near_arrival_2to1"
+
+                    if stop_code == "cab":
+                        logger.info(f"DEBUG Cabra: Near-arrival detected (2→1): {destination} ({direction})")
+
+                # Tertiary: Imminent arrival (1 to 0) - very accurate
+                elif (prev_poll.forecast_arrival_minutes == 1 and
+                      curr_poll.forecast_arrival_minutes == 0):
+                    is_arrival = True
+                    transition_type = "imminent_arrival_1to0"
+
+                    if stop_code == "cab":
+                        logger.info(f"DEBUG Cabra: Imminent arrival detected (1→0): {destination} ({direction})")
+
+                if is_arrival:
                     # The tram arrived between prev_poll and curr_poll
                     # Original forecast from prev_poll: "arriving in X minutes"
                     original_forecast_minutes = prev_poll.forecast_arrival_minutes
-                    
-                    # Actual arrival time estimate:
-                    # The tram was forecast to arrive in X minutes at prev_poll time
-                    forecast_arrival_time = prev_poll.recorded_at + timedelta(minutes=original_forecast_minutes)
-                    
-                    # Actual arrival was between prev_poll and curr_poll
-                    actual_arrival_time = curr_poll.recorded_at
-                    
-                    # Calculate delta: how many minutes off were we?
-                    time_delta_seconds = (actual_arrival_time - forecast_arrival_time).total_seconds()
-                    time_delta_minutes = time_delta_seconds / 60
-                    accuracy_delta = int(round(time_delta_minutes))
+
+                    # Time elapsed between polls (actual time to arrival)
+                    actual_minutes_elapsed = time_between_polls
+
+                    # Calculate accuracy delta
+                    # Positive = arrived later than forecast, Negative = arrived earlier
+                    accuracy_delta = int(round(actual_minutes_elapsed - original_forecast_minutes))
                     
                     # Sanity check: delta shouldn't be more than ~2 minutes per poll period
                     if abs(accuracy_delta) > 5:
                         logger.debug(f"Skipping accuracy (data error): {destination} delta={accuracy_delta}m")
                         continue
                     
-                    # Check if we already recorded this (only in last 5 minutes to avoid duplicates)
-                    # Use a 5-minute window since job runs every 5 minutes
+                    # Check if we already recorded this (only in last 2 minutes to avoid duplicates)
+                    # Use a 2-minute window since job runs every 1 minute
                     existing = db.query(LuasAccuracy).filter(
                         LuasAccuracy.stop_code == stop_code,
                         LuasAccuracy.direction == direction,
                         LuasAccuracy.destination == destination,
                         LuasAccuracy.forecasted_minutes == original_forecast_minutes,
-                        LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(minutes=5))
+                        LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(minutes=2))
                     ).first()
                     
                     if existing:
                         logger.debug(f"Duplicate accuracy record skipped: {destination}")
                         continue
-                    
-                    # Calculate actual minutes (time elapsed from prev_poll to actual arrival)
-                    actual_minutes = int(round((actual_arrival_time - prev_poll.recorded_at).total_seconds() / 60))
-                    
+
                     accuracy_record = LuasAccuracy(
                         stop_code=stop_code,
                         direction=direction,
                         destination=destination,
                         forecasted_minutes=original_forecast_minutes,
-                        actual_minutes=actual_minutes,
+                        actual_minutes=int(round(actual_minutes_elapsed)),
                         accuracy_delta=accuracy_delta,
                         calculated_at=datetime.utcnow()
                     )
@@ -129,7 +167,7 @@ def calculate_accuracy_from_snapshots():
                     db.add(accuracy_record)
                     accuracy_count += 1
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
-                    logger.info(f"✓ Accuracy: {destination} ({direction}) - forecast {original_forecast_minutes}m, actual {actual_minutes}m ({status})")
+                    logger.info(f"✓ Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(actual_minutes_elapsed))}m ({status})")
         
         logger.info(f"About to commit {accuracy_count} accuracy records...")
         if accuracy_count > 0:
@@ -231,11 +269,11 @@ def start_luas_polling(scheduler: BackgroundScheduler):
         scheduler.add_job(
             calculate_accuracy_from_snapshots,
             "interval",
-            minutes=5,
+            minutes=1,
             id="accuracy_calculation",
             name="Calculate forecast accuracy from snapshots",
             replace_existing=True
         )
-        logger.info("✓ Accuracy calculation job scheduled (every 5 minutes)")
+        logger.info("✓ Accuracy calculation job scheduled (every 1 minute)")
     except Exception as e:
         logger.error(f"❌ FAILED to schedule accuracy_calculation: {e}", exc_info=True)
