@@ -16,7 +16,7 @@ STOPS_TO_POLL = [
     "con",  # Connolly
     "fou",  # Four Courts
     "jer",  # Jervis
-    "bri",  # Broombridge
+    "bro",  # Broombridge
     "bus",  # Busáras
     "tem",  # Temple Bar
     "lep",  # Leopardstown
