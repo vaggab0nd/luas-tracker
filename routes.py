@@ -15,7 +15,7 @@ router = APIRouter()
 # Luas stops data - Green and Red lines
 LUAS_STOPS = {
     # Green Line
-    "bri": {"name": "Broombridge", "line": "Green"},
+    "bro": {"name": "Broombridge", "line": "Green"},
     "cab": {"name": "Cabra", "line": "Green"},
     "con": {"name": "Connolly", "line": "Green"},
     "bus": {"name": "Busáras", "line": "Green"},
@@ -172,7 +172,7 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
     """
     Get forecast accuracy metrics for a specific stop.
     Parameters:
-    - stop_code: Stop code (cab, con, tal, fou, jer, bri, bus, lep, dro, tem)
+    - stop_code: Stop code (cab, con, tal, fou, jer, bro, bus, lep, dro, tem)
     - hours: Number of hours to look back (default 24)
     """
     logger.info(f"GET /accuracy/summary called with stop_code={stop_code}, hours={hours}")
