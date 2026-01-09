@@ -11,16 +11,21 @@ logger = logging.getLogger(__name__)
 
 # Stops to poll - major stops on both lines
 STOPS_TO_POLL = [
-    "cab",  # Cabra
-    "tal",  # Tallaght
-    "con",  # Connolly
-    "fou",  # Four Courts
-    "jer",  # Jervis
+    # Green Line major stops
     "bro",  # Broombridge
-    "bus",  # Busáras
-    "tem",  # Temple Bar
-    "lep",  # Leopardstown
-    "dro",  # Drury Street
+    "cab",  # Cabra
+    "sts",  # St. Stephen's Green
+    "ran",  # Ranelagh
+    "san",  # Sandyford
+    "bri",  # Brides Glen
+
+    # Red Line major stops
+    "tal",  # Tallaght
+    "red",  # Red Cow
+    "heu",  # Heuston
+    "jer",  # Jervis
+    "con",  # Connolly
+    "tpt",  # The Point
 ]
 
 
