@@ -92,50 +92,55 @@ def calculate_accuracy_from_snapshots():
                     logger.debug(f"DEBUG {stop_code}: Skipping {destination} - polls {time_between_polls:.1f}m apart (>2m threshold)")
                     continue
 
-                # Track multiple transition types for better coverage:
-                # 1. Standard arrival: >0 → 0 (most accurate)
-                # 2. Near-arrival: 2 → 1 (gives us more data points)
-                # 3. Imminent arrival: 1 → 0 (very close to actual)
+                # Track small forecast decrements to measure accuracy:
+                # 1→0: Most reliable (tram just arrived)
+                # 2→1: Fairly reliable (tram arriving soon)
+                # 3→2: Less reliable but gives more data points
 
                 is_arrival = False
                 transition_type = None
 
-                # Primary: Standard arrival detection (>0 to 0)
-                if (prev_poll.forecast_arrival_minutes > 0 and
+                # NOTE: Without unique tram IDs, we can't reliably track the same tram across polls
+                # A transition like 12→0 likely represents TWO DIFFERENT trams, not forecast accuracy
+                # Only use small transitions where we're confident it's the same tram
+
+                # Primary: Imminent arrival (1 to 0) - most reliable
+                if (prev_poll.forecast_arrival_minutes == 1 and
                     curr_poll.forecast_arrival_minutes == 0):
                     is_arrival = True
-                    transition_type = "arrival"
-                    logger.info(f"DEBUG {stop_code}: ARRIVAL DETECTED! {destination} ({direction}) {prev_poll.forecast_arrival_minutes}→0")
+                    transition_type = "imminent_arrival_1to0"
+                    logger.info(f"DEBUG {stop_code}: Imminent arrival detected (1→0): {destination} ({direction})")
 
-                # Secondary: Near-arrival tracking (2 to 1) - gives more data but less precise
+                # Secondary: Near-arrival tracking (2 to 1) - fairly reliable
                 elif (prev_poll.forecast_arrival_minutes == 2 and
                       curr_poll.forecast_arrival_minutes == 1):
                     is_arrival = True
                     transition_type = "near_arrival_2to1"
                     logger.info(f"DEBUG {stop_code}: Near-arrival detected (2→1): {destination} ({direction})")
 
-                # Tertiary: Imminent arrival (1 to 0) - very accurate
-                elif (prev_poll.forecast_arrival_minutes == 1 and
-                      curr_poll.forecast_arrival_minutes == 0):
+                # Tertiary: 3 to 2 transition - less reliable but still useful
+                elif (prev_poll.forecast_arrival_minutes == 3 and
+                      curr_poll.forecast_arrival_minutes == 2):
                     is_arrival = True
-                    transition_type = "imminent_arrival_1to0"
-                    logger.info(f"DEBUG {stop_code}: Imminent arrival detected (1→0): {destination} ({direction})")
+                    transition_type = "near_arrival_3to2"
+                    logger.info(f"DEBUG {stop_code}: Near-arrival detected (3→2): {destination} ({direction})")
 
                 if is_arrival:
-                    # The tram arrived between prev_poll and curr_poll
+                    # The tram transitioned between prev_poll and curr_poll
                     # Original forecast from prev_poll: "arriving in X minutes"
                     original_forecast_minutes = prev_poll.forecast_arrival_minutes
 
-                    # Time elapsed between polls (actual time to arrival)
-                    actual_minutes_elapsed = time_between_polls
+                    # For X→(X-1) transitions, assume tram arrived at midpoint of polling interval
+                    # This gives us a reasonable estimate of actual arrival time
+                    estimated_actual_minutes = time_between_polls / 2
 
                     # Calculate accuracy delta
                     # Positive = arrived later than forecast, Negative = arrived earlier
-                    accuracy_delta = int(round(actual_minutes_elapsed - original_forecast_minutes))
-                    
-                    # Sanity check: delta shouldn't be more than ~2 minutes per poll period
-                    if abs(accuracy_delta) > 5:
-                        logger.debug(f"Skipping accuracy (data error): {destination} delta={accuracy_delta}m")
+                    accuracy_delta = int(round(estimated_actual_minutes - original_forecast_minutes))
+
+                    # Sanity check: for 1-3 minute forecasts with 30s polls, delta should be within ±2 minutes
+                    if abs(accuracy_delta) > 2:
+                        logger.debug(f"Skipping accuracy (unexpected delta): {destination} delta={accuracy_delta}m")
                         continue
                     
                     # Check if we already recorded this (only in last 2 minutes to avoid duplicates)
@@ -157,7 +162,7 @@ def calculate_accuracy_from_snapshots():
                         direction=direction,
                         destination=destination,
                         forecasted_minutes=original_forecast_minutes,
-                        actual_minutes=int(round(actual_minutes_elapsed)),
+                        actual_minutes=int(round(estimated_actual_minutes)),
                         accuracy_delta=accuracy_delta,
                         calculated_at=datetime.utcnow()
                     )
