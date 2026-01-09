@@ -170,7 +170,7 @@ def calculate_accuracy_from_snapshots():
                     db.add(accuracy_record)
                     accuracy_count += 1
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
-                    logger.info(f"✓ Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(actual_minutes_elapsed))}m ({status})")
+                    logger.info(f"✓ Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(estimated_actual_minutes))}m ({status})")
         
         logger.info(f"About to commit {accuracy_count} accuracy records...")
         if accuracy_count > 0:
