@@ -107,7 +107,7 @@ class CurrentArrivalsResponse(BaseModel):
 async def get_stops():
     """
     Get list of all available Luas stops.
-    Returns stops organized by line with their codes.
+    Returns stops organized by line with their codes in route order.
     """
     green_line = [
         {"code": code, "name": stop["name"], "line": stop["line"]}
@@ -119,11 +119,11 @@ async def get_stops():
         for code, stop in LUAS_STOPS.items()
         if stop["line"] == "Red"
     ]
-    
+
     return {
         "stops": {
-            "green": sorted(green_line, key=lambda x: x["name"]),
-            "red": sorted(red_line, key=lambda x: x["name"])
+            "green": green_line,  # Maintains insertion order from dict (route order)
+            "red": red_line
         }
     }
 
@@ -212,7 +212,7 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
     """
     Get forecast accuracy metrics for a specific stop.
     Parameters:
-    - stop_code: Stop code (cab, con, tal, fou, jer, bro, bus, lep, dro, tem)
+    - stop_code: Stop code (e.g., bro, cab, sts, tal, jer, con, etc. - see /stops for full list)
     - hours: Number of hours to look back (default 24)
     """
     logger.info(f"GET /accuracy/summary called with stop_code={stop_code}, hours={hours}")
