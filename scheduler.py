@@ -32,20 +32,24 @@ STOPS_TO_POLL = [
 def calculate_accuracy_from_snapshots():
     """
     Calculate forecast accuracy by comparing forecasts across polls.
-    
+
     Better algorithm:
     - For each tram (destination + direction), look at forecast progression
     - When a tram "arrives" (forecast goes from positive to 0/negative)
     - Calculate actual time to arrival and compare to original forecast
     - Store accuracy delta
-    
+
     Runs every 5 minutes to process recently arrived trams
     """
+    logger.info("=== ACCURACY CALCULATION JOB STARTED ===")
     try:
         db = SessionLocal()
+        logger.info(f"Database session created: {db}")
 
         # Get snapshots from the last 2 hours
         two_hours_ago = datetime.utcnow() - timedelta(hours=2)
+        logger.info(f"Querying snapshots since {two_hours_ago.isoformat()}")
+
         recent_snapshots = db.query(LuasSnapshot).filter(
             LuasSnapshot.recorded_at >= two_hours_ago
         ).all()
@@ -193,17 +197,19 @@ def calculate_accuracy_from_snapshots():
                     logger.error("Rollback also failed")
         else:
             logger.info("No accuracy records to commit this cycle")
-        
+
         db.close()
-    
+        logger.info("=== ACCURACY CALCULATION JOB COMPLETED ===")
+
     except Exception as e:
+        logger.error(f"=== ACCURACY CALCULATION JOB FAILED ===")
+        logger.error(f"Error calculating accuracy: {type(e).__name__}: {e}", exc_info=True)
         if 'db' in locals():
             try:
                 db.rollback()
                 db.close()
             except:
                 pass
-        logger.error(f"Error calculating accuracy: {e}")
 
 
 def poll_luas_and_store():
@@ -258,8 +264,12 @@ def start_luas_polling(scheduler: BackgroundScheduler):
     """
     Start the background polling jobs.
     - Polls the Luas API every 30 seconds for all configured stops
-    - Calculates accuracy every 5 minutes
+    - Calculates accuracy every 1 minute
     """
+    logger.info("=" * 60)
+    logger.info("SCHEDULER STARTUP - Registering background jobs")
+    logger.info("=" * 60)
+
     try:
         scheduler.add_job(
             poll_luas_and_store,
@@ -272,7 +282,7 @@ def start_luas_polling(scheduler: BackgroundScheduler):
         logger.info("✓ Luas polling job scheduled (every 30 seconds)")
     except Exception as e:
         logger.error(f"❌ FAILED to schedule luas_polling: {e}", exc_info=True)
-    
+
     # Add accuracy calculation job
     try:
         scheduler.add_job(
@@ -284,5 +294,14 @@ def start_luas_polling(scheduler: BackgroundScheduler):
             replace_existing=True
         )
         logger.info("✓ Accuracy calculation job scheduled (every 1 minute)")
+
+        # Get the job details to confirm it was added
+        jobs = scheduler.get_jobs()
+        logger.info(f"Total jobs registered: {len(jobs)}")
+        for job in jobs:
+            logger.info(f"  - Job '{job.id}': {job.name}, next run: {job.next_run_time}")
+
     except Exception as e:
         logger.error(f"❌ FAILED to schedule accuracy_calculation: {e}", exc_info=True)
+
+    logger.info("=" * 60)

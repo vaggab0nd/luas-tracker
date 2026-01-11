@@ -432,23 +432,36 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
         LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(hours=24))
     ).scalar()
 
+    # Also check snapshots table for comparison
+    total_snapshots = db.query(func.count(LuasSnapshot.id)).scalar()
+    recent_snapshots = db.query(func.count(LuasSnapshot.id)).filter(
+        LuasSnapshot.recorded_at >= (datetime.utcnow() - timedelta(hours=24))
+    ).scalar()
+
     # Get sample records
     samples = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(5).all()
 
     return {
-        "total_accuracy_records": total_count,
-        "records_in_last_24h": recent_count,
-        "sample_records": [
-            {
-                "destination": s.destination,
-                "direction": s.direction,
-                "forecasted": s.forecasted_minutes,
-                "actual": s.actual_minutes,
-                "delta": s.accuracy_delta,
-                "calculated_at": s.calculated_at.isoformat()
-            }
-            for s in samples
-        ]
+        "luas_accuracy_table": {
+            "total_records": total_count,
+            "records_in_last_24h": recent_count,
+            "sample_records": [
+                {
+                    "stop_code": s.stop_code,
+                    "destination": s.destination,
+                    "direction": s.direction,
+                    "forecasted": s.forecasted_minutes,
+                    "actual": s.actual_minutes,
+                    "delta": s.accuracy_delta,
+                    "calculated_at": s.calculated_at.isoformat()
+                }
+                for s in samples
+            ]
+        },
+        "luas_snapshots_table": {
+            "total_records": total_snapshots,
+            "records_in_last_24h": recent_snapshots,
+        }
     }
 
 
