@@ -43,15 +43,17 @@ def calculate_accuracy_from_snapshots():
     """
     try:
         db = SessionLocal()
-        
+
         # Get snapshots from the last 2 hours
         two_hours_ago = datetime.utcnow() - timedelta(hours=2)
         recent_snapshots = db.query(LuasSnapshot).filter(
             LuasSnapshot.recorded_at >= two_hours_ago
         ).all()
-        
+
+        logger.info(f"Accuracy calculation: Retrieved {len(recent_snapshots)} snapshots from last 2 hours")
+
         if not recent_snapshots:
-            logger.debug("No snapshots to calculate accuracy from")
+            logger.info("No snapshots to calculate accuracy from - database may be empty or too new")
             db.close()
             return
         
@@ -63,7 +65,9 @@ def calculate_accuracy_from_snapshots():
             # Group by stop/direction/destination to track tram progression
             key = (snapshot.stop_code, snapshot.direction, snapshot.destination)
             tram_history[key].append(snapshot)
-        
+
+        logger.info(f"Accuracy calculation: Grouped into {len(tram_history)} unique tram routes")
+
         accuracy_count = 0
         
         # For each tram type, look for ones that "arrived"
@@ -72,9 +76,10 @@ def calculate_accuracy_from_snapshots():
             polls.sort(key=lambda x: x.recorded_at)
 
             # Debug logging for all stops
-            logger.info(f"DEBUG {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
+            logger.info(f"Analyzing {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
             if len(polls) >= 2:
-                logger.info(f"  Latest forecasts: {[p.forecast_arrival_minutes for p in polls[-5:]]}")
+                latest_forecasts = [p.forecast_arrival_minutes for p in polls[-5:]]
+                logger.info(f"  Latest 5 forecasts: {latest_forecasts}")
 
             if len(polls) < 2:
                 continue
@@ -171,7 +176,8 @@ def calculate_accuracy_from_snapshots():
                     accuracy_count += 1
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
                     logger.info(f"✓ Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(estimated_actual_minutes))}m ({status})")
-        
+
+        logger.info(f"Accuracy calculation complete: Analyzed {len(tram_history)} routes, found {accuracy_count} accuracy records")
         logger.info(f"About to commit {accuracy_count} accuracy records...")
         if accuracy_count > 0:
             try:
