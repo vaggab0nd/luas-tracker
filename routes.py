@@ -386,10 +386,10 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
     recent_count = db.query(func.count(LuasAccuracy.id)).filter(
         LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(hours=24))
     ).scalar()
-    
+
     # Get sample records
     samples = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(5).all()
-    
+
     return {
         "total_accuracy_records": total_count,
         "records_in_last_24h": recent_count,
@@ -405,6 +405,109 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
             for s in samples
         ]
     }
+
+
+@router.get("/debug/data-collection")
+async def debug_data_collection(db: Session = Depends(get_db)):
+    """
+    Debug endpoint to check if data collection (polling) is working.
+    Returns status of the background polling job.
+    """
+    try:
+        # Check when the last snapshot was recorded
+        latest_snapshot = db.query(LuasSnapshot).order_by(
+            desc(LuasSnapshot.recorded_at)
+        ).first()
+
+        if not latest_snapshot:
+            return {
+                "status": "no_data",
+                "healthy": False,
+                "message": "No data collected yet - polling may not have started",
+                "last_poll": None,
+                "seconds_ago": None
+            }
+
+        # Calculate how long ago the last poll was
+        now = datetime.utcnow()
+        time_since_last_poll = (now - latest_snapshot.recorded_at).total_seconds()
+
+        # Polling runs every 30 seconds, so if last poll was >90 seconds ago, something is wrong
+        is_healthy = time_since_last_poll < 90
+
+        return {
+            "status": "healthy" if is_healthy else "stale",
+            "healthy": is_healthy,
+            "message": (
+                "Data collection is active" if is_healthy
+                else f"Last poll was {int(time_since_last_poll)}s ago - polling may have stopped"
+            ),
+            "last_poll": latest_snapshot.recorded_at.isoformat(),
+            "seconds_ago": int(time_since_last_poll),
+            "last_stop_polled": latest_snapshot.stop_code,
+            "polling_interval_seconds": 30
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking data collection status: {e}")
+        return {
+            "status": "error",
+            "healthy": False,
+            "message": f"Error checking data collection: {str(e)}",
+            "last_poll": None,
+            "seconds_ago": None
+        }
+
+
+@router.get("/debug/database")
+async def debug_database(db: Session = Depends(get_db)):
+    """
+    Debug endpoint to check database connectivity and health.
+    Verifies the database is accessible and data is being written.
+    """
+    try:
+        # Test 1: Basic connectivity - count snapshots
+        snapshot_count = db.query(func.count(LuasSnapshot.id)).scalar()
+
+        # Test 2: Count accuracy records
+        accuracy_count = db.query(func.count(LuasAccuracy.id)).scalar()
+
+        # Test 3: Check recent writes (last 5 minutes)
+        five_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
+        recent_snapshots = db.query(func.count(LuasSnapshot.id)).filter(
+            LuasSnapshot.recorded_at >= five_minutes_ago
+        ).scalar()
+
+        # Test 4: Get latest record timestamp
+        latest_record = db.query(LuasSnapshot).order_by(
+            desc(LuasSnapshot.recorded_at)
+        ).first()
+
+        # Database is healthy if we can query it and have recent data
+        is_healthy = snapshot_count > 0 and recent_snapshots > 0
+
+        return {
+            "status": "healthy" if is_healthy else "degraded",
+            "healthy": is_healthy,
+            "message": (
+                "Database is connected and receiving data" if is_healthy
+                else "Database connected but no recent data"
+            ),
+            "total_snapshots": snapshot_count,
+            "total_accuracy_records": accuracy_count,
+            "snapshots_last_5min": recent_snapshots,
+            "latest_record_time": latest_record.recorded_at.isoformat() if latest_record else None,
+            "connection": "ok"
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking database health: {e}")
+        return {
+            "status": "error",
+            "healthy": False,
+            "message": f"Database error: {str(e)}",
+            "connection": "failed"
+        }
 
 
 @router.get("/metrics/accuracy")
