@@ -101,8 +101,18 @@ def calculate_accuracy_from_snapshots():
             if is_green_line:
                 logger.info(f"GREEN LINE ANALYSIS: {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
                 if len(polls) >= 2:
-                    latest_forecasts = [p.forecast_arrival_minutes for p in polls[-5:]]
-                    logger.info(f"  Latest 5 forecasts: {latest_forecasts}")
+                    latest_forecasts = [p.forecast_arrival_minutes for p in polls[-10:]]
+                    logger.info(f"  Latest 10 forecasts: {latest_forecasts}")
+
+                    # Find ALL transitions (not just 1→0, 2→1, 3→2)
+                    transitions_sample = []
+                    for i in range(1, min(20, len(polls))):  # Check first 20 transitions
+                        if polls[i].forecast_arrival_minutes != polls[i-1].forecast_arrival_minutes:
+                            transitions_sample.append(f"{polls[i-1].forecast_arrival_minutes}→{polls[i].forecast_arrival_minutes}")
+                    if transitions_sample:
+                        logger.info(f"  Sample transitions: {', '.join(transitions_sample[:10])}")
+                    else:
+                        logger.info(f"  NO TRANSITIONS FOUND in first 20 polls")
 
             if len(polls) < 2:
                 if is_green_line:
