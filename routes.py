@@ -465,6 +465,65 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/debug/snapshots/transitions")
+async def debug_snapshot_transitions(db: Session = Depends(get_db), stop_code: str = "cab", minutes: int = 30):
+    """
+    Debug endpoint to see forecast transitions for a specific stop.
+    Shows how forecasts change over time to diagnose why accuracy isn't being calculated.
+    """
+    from collections import defaultdict
+
+    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+
+    # Get recent snapshots for this stop
+    snapshots = db.query(LuasSnapshot).filter(
+        LuasSnapshot.stop_code == stop_code,
+        LuasSnapshot.recorded_at >= cutoff_time
+    ).order_by(LuasSnapshot.recorded_at.desc()).all()
+
+    # Group by destination/direction to track tram progression
+    tram_history = defaultdict(list)
+    for snapshot in snapshots:
+        key = (snapshot.destination, snapshot.direction)
+        tram_history[key].append({
+            "forecast_minutes": snapshot.forecast_arrival_minutes,
+            "recorded_at": snapshot.recorded_at.isoformat()
+        })
+
+    # Analyze transitions for each tram route
+    transitions = {}
+    for (dest, direction), history in tram_history.items():
+        # Sort by time (oldest first)
+        history.sort(key=lambda x: x["recorded_at"])
+
+        # Find transitions
+        found_transitions = []
+        for i in range(1, len(history)):
+            prev = history[i-1]["forecast_minutes"]
+            curr = history[i]["forecast_minutes"]
+            if prev != curr:
+                found_transitions.append({
+                    "from": prev,
+                    "to": curr,
+                    "time": history[i]["recorded_at"]
+                })
+
+        transitions[f"{dest} ({direction})"] = {
+            "total_snapshots": len(history),
+            "forecast_range": f"{min(h['forecast_minutes'] for h in history)}-{max(h['forecast_minutes'] for h in history)} minutes",
+            "transitions_found": len(found_transitions),
+            "sample_transitions": found_transitions[:10]
+        }
+
+    return {
+        "stop_code": stop_code,
+        "period_minutes": minutes,
+        "total_snapshots": len(snapshots),
+        "unique_routes": len(tram_history),
+        "routes": transitions
+    }
+
+
 @router.get("/debug/data-collection")
 async def debug_data_collection(db: Session = Depends(get_db)):
     """
