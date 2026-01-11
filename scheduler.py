@@ -61,13 +61,19 @@ def calculate_accuracy_from_snapshots():
             db.close()
             return
         
-        # Group by (stop, direction, destination) to track same tram across polls
+        # Track INDIVIDUAL trams using arrival time as pseudo-ID
+        # Group by (stop, direction, destination, arrival_time_bucket)
         from collections import defaultdict
         tram_history = defaultdict(list)
 
         for snapshot in recent_snapshots:
-            # Group by stop/direction/destination to track tram progression
-            key = (snapshot.stop_code, snapshot.direction, snapshot.destination)
+            # Round forecast_arrival_time to 5-minute buckets to group same tram across polls
+            # This handles slight timing variations between polls
+            arrival_time_bucket = snapshot.forecast_arrival_time.replace(second=0, microsecond=0)
+            bucket_minute = (arrival_time_bucket.minute // 5) * 5
+            arrival_time_bucket = arrival_time_bucket.replace(minute=bucket_minute)
+
+            key = (snapshot.stop_code, snapshot.direction, snapshot.destination, arrival_time_bucket)
             tram_history[key].append(snapshot)
 
         logger.info(f"Accuracy calculation: Grouped into {len(tram_history)} unique tram routes")
@@ -80,43 +86,33 @@ def calculate_accuracy_from_snapshots():
 
         # Count and LOG each stop type
         routes_by_stop = {}
-        for (stop, direction, destination) in tram_history.keys():
+        for (stop, direction, destination, _) in tram_history.keys():
             if stop not in routes_by_stop:
                 routes_by_stop[stop] = []
             routes_by_stop[stop].append(f"{destination} ({direction})")
 
-        red_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in red_line_stops)
-        green_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in green_line_stops)
+        red_line_routes = sum(1 for (stop, _, _, _) in tram_history.keys() if stop in red_line_stops)
+        green_line_routes = sum(1 for (stop, _, _, _) in tram_history.keys() if stop in green_line_stops)
 
         logger.info(f"Route breakdown: {red_line_routes} Red Line routes, {green_line_routes} Green Line routes")
-        logger.info(f"Routes by stop: {routes_by_stop}")
+        logger.info(f"Unique tram instances being tracked: {len(tram_history)}")
 
-        # For each tram type, look for ones that "arrived"
-        for (stop_code, direction, destination), polls in tram_history.items():
+        # For each INDIVIDUAL tram, look for ones that "arrived"
+        for (stop_code, direction, destination, arrival_bucket), polls in tram_history.items():
             # Sort by recorded_at time
             polls.sort(key=lambda x: x.recorded_at)
 
             # Debug logging for Green Line stops specifically
             is_green_line = stop_code in green_line_stops
-            if is_green_line:
-                logger.info(f"GREEN LINE ANALYSIS: {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
-                if len(polls) >= 2:
-                    latest_forecasts = [p.forecast_arrival_minutes for p in polls[-10:]]
-                    logger.info(f"  Latest 10 forecasts: {latest_forecasts}")
 
-                    # Find ALL transitions (not just 1→0, 2→1, 3→2)
-                    transitions_sample = []
-                    for i in range(1, min(20, len(polls))):  # Check first 20 transitions
-                        if polls[i].forecast_arrival_minutes != polls[i-1].forecast_arrival_minutes:
-                            transitions_sample.append(f"{polls[i-1].forecast_arrival_minutes}→{polls[i].forecast_arrival_minutes}")
-                    if transitions_sample:
-                        logger.info(f"  Sample transitions: {', '.join(transitions_sample[:10])}")
-                    else:
-                        logger.info(f"  NO TRANSITIONS FOUND in first 20 polls")
+            # Only log if we have enough polls to be interesting
+            if is_green_line and len(polls) >= 5:
+                forecasts = [p.forecast_arrival_minutes for p in polls]
+                min_forecast = min(forecasts)
+                max_forecast = max(forecasts)
+                logger.info(f"GREEN LINE TRAM: {stop_code}: {destination} ({direction}) - {len(polls)} polls, range {min_forecast}-{max_forecast}m")
 
             if len(polls) < 2:
-                if is_green_line:
-                    logger.info(f"  SKIPPED: Only {len(polls)} poll(s), need at least 2")
                 continue
             
             # Look for trams that went from being tracked to arriving (forecast decreased to 0)
