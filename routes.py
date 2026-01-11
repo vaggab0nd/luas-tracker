@@ -216,10 +216,28 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
     - hours: Number of hours to look back (default 24)
     """
     logger.info(f"GET /accuracy/summary called with stop_code={stop_code}, hours={hours}")
-    
+
     try:
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-        
+        logger.info(f"Cutoff time: {cutoff_time.isoformat()}")
+
+        # First, check total records for debugging
+        total_records = db.query(func.count(LuasAccuracy.id)).scalar()
+        logger.info(f"Total accuracy records in database: {total_records}")
+
+        # Check records for this stop (no time filter)
+        stop_records = db.query(func.count(LuasAccuracy.id)).filter(
+            LuasAccuracy.stop_code == stop_code
+        ).scalar()
+        logger.info(f"Total accuracy records for stop {stop_code}: {stop_records}")
+
+        # Check records for this stop within time window
+        recent_records = db.query(func.count(LuasAccuracy.id)).filter(
+            LuasAccuracy.stop_code == stop_code,
+            LuasAccuracy.calculated_at >= cutoff_time
+        ).scalar()
+        logger.info(f"Accuracy records for stop {stop_code} in last {hours}h: {recent_records}")
+
         # Query accuracy data grouped by destination/direction for the specified stop
         accuracy_data = db.query(
             LuasAccuracy.destination,
@@ -235,17 +253,33 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
             LuasAccuracy.destination,
             LuasAccuracy.direction
         ).all()
-        
-        logger.info(f"Found {len(accuracy_data)} accuracy records for stop {stop_code}")
-        
+
+        logger.info(f"Grouped accuracy data returned {len(accuracy_data)} rows")
+
         if not accuracy_data:
+            # Get sample records to help debug
+            sample = db.query(LuasAccuracy).limit(5).all()
+            sample_info = [
+                {
+                    "stop_code": s.stop_code,
+                    "calculated_at": s.calculated_at.isoformat(),
+                    "destination": s.destination
+                }
+                for s in sample
+            ]
+
             return {
                 "stop_code": stop_code,
                 "period_hours": hours,
-                "message": "No accuracy data available yet",
+                "message": f"No accuracy data found for stop '{stop_code}' in the last {hours} hours",
+                "debug_info": {
+                    "total_records_in_db": total_records,
+                    "records_for_this_stop": stop_records,
+                    "sample_records": sample_info
+                },
                 "data": []
             }
-        
+
         return {
             "stop_code": stop_code,
             "period_hours": hours,
@@ -261,9 +295,9 @@ async def get_accuracy_summary(db: Session = Depends(get_db), stop_code: str = "
                 for row in accuracy_data
             ]
         }
-    
+
     except Exception as e:
-        logger.error(f"Error in accuracy/summary: {e}")
+        logger.error(f"Error in accuracy/summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -358,9 +392,19 @@ async def calculate_accuracy(db: Session = Depends(get_db)):
 async def debug_accuracy_by_stop(db: Session = Depends(get_db)):
     """Debug endpoint to see accuracy records by stop"""
     from collections import defaultdict
-    
+
+    # Get all unique stop codes and their counts
+    stop_counts = db.query(
+        LuasAccuracy.stop_code,
+        func.count(LuasAccuracy.id).label("count")
+    ).group_by(LuasAccuracy.stop_code).all()
+
+    logger.info(f"Found accuracy data for {len(stop_counts)} unique stops")
+    for stop, count in stop_counts:
+        logger.info(f"  {stop}: {count} records")
+
     all_records = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(100).all()
-    
+
     by_stop = defaultdict(list)
     for record in all_records:
         by_stop[record.stop_code].append({
@@ -369,9 +413,10 @@ async def debug_accuracy_by_stop(db: Session = Depends(get_db)):
             "delta": record.accuracy_delta,
             "calculated_at": record.calculated_at.isoformat()
         })
-    
+
     return {
         "total_records": len(all_records),
+        "stop_counts": {stop: count for stop, count in stop_counts},
         "by_stop": {
             stop: records[:5]  # First 5 for each stop
             for stop, records in by_stop.items()
