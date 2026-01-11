@@ -32,20 +32,24 @@ STOPS_TO_POLL = [
 def calculate_accuracy_from_snapshots():
     """
     Calculate forecast accuracy by comparing forecasts across polls.
-    
+
     Better algorithm:
     - For each tram (destination + direction), look at forecast progression
     - When a tram "arrives" (forecast goes from positive to 0/negative)
     - Calculate actual time to arrival and compare to original forecast
     - Store accuracy delta
-    
+
     Runs every 5 minutes to process recently arrived trams
     """
+    logger.info("=== ACCURACY CALCULATION JOB STARTED ===")
     try:
         db = SessionLocal()
+        logger.info(f"Database session created: {db}")
 
         # Get snapshots from the last 2 hours
         two_hours_ago = datetime.utcnow() - timedelta(hours=2)
+        logger.info(f"Querying snapshots since {two_hours_ago.isoformat()}")
+
         recent_snapshots = db.query(LuasSnapshot).filter(
             LuasSnapshot.recorded_at >= two_hours_ago
         ).all()
@@ -70,18 +74,31 @@ def calculate_accuracy_from_snapshots():
 
         accuracy_count = 0
         
+        # Group stops by line for analysis
+        red_line_stops = {"tal", "red", "heu", "jer", "con", "tpt"}
+        green_line_stops = {"bro", "cab", "sts", "ran", "san", "bri"}
+
+        red_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in red_line_stops)
+        green_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in green_line_stops)
+
+        logger.info(f"Route breakdown: {red_line_routes} Red Line routes, {green_line_routes} Green Line routes")
+
         # For each tram type, look for ones that "arrived"
         for (stop_code, direction, destination), polls in tram_history.items():
             # Sort by recorded_at time
             polls.sort(key=lambda x: x.recorded_at)
 
-            # Debug logging for all stops
-            logger.info(f"Analyzing {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
-            if len(polls) >= 2:
-                latest_forecasts = [p.forecast_arrival_minutes for p in polls[-5:]]
-                logger.info(f"  Latest 5 forecasts: {latest_forecasts}")
+            # Debug logging for Green Line stops specifically
+            is_green_line = stop_code in green_line_stops
+            if is_green_line:
+                logger.info(f"GREEN LINE ANALYSIS: {stop_code}: {destination} ({direction}) - {len(polls)} polls found")
+                if len(polls) >= 2:
+                    latest_forecasts = [p.forecast_arrival_minutes for p in polls[-5:]]
+                    logger.info(f"  Latest 5 forecasts: {latest_forecasts}")
 
             if len(polls) < 2:
+                if is_green_line:
+                    logger.info(f"  SKIPPED: Only {len(polls)} poll(s), need at least 2")
                 continue
             
             # Look for trams that went from being tracked to arriving (forecast decreased to 0)
@@ -94,7 +111,8 @@ def calculate_accuracy_from_snapshots():
                 # Skip if polls are too far apart (more than 2 minutes = missed polls)
                 time_between_polls = (curr_poll.recorded_at - prev_poll.recorded_at).total_seconds() / 60
                 if time_between_polls > 2:
-                    logger.debug(f"DEBUG {stop_code}: Skipping {destination} - polls {time_between_polls:.1f}m apart (>2m threshold)")
+                    if is_green_line:
+                        logger.info(f"  SKIPPED TRANSITION: polls {time_between_polls:.1f}m apart (>2m threshold)")
                     continue
 
                 # Track small forecast decrements to measure accuracy:
@@ -135,6 +153,9 @@ def calculate_accuracy_from_snapshots():
                     # Original forecast from prev_poll: "arriving in X minutes"
                     original_forecast_minutes = prev_poll.forecast_arrival_minutes
 
+                    if is_green_line:
+                        logger.info(f"  TRANSITION DETECTED [{transition_type}]: {prev_poll.forecast_arrival_minutes}→{curr_poll.forecast_arrival_minutes}")
+
                     # For X→(X-1) transitions, assume tram arrived at midpoint of polling interval
                     # This gives us a reasonable estimate of actual arrival time
                     estimated_actual_minutes = time_between_polls / 2
@@ -145,9 +166,10 @@ def calculate_accuracy_from_snapshots():
 
                     # Sanity check: for 1-3 minute forecasts with 30s polls, delta should be within ±2 minutes
                     if abs(accuracy_delta) > 2:
-                        logger.debug(f"Skipping accuracy (unexpected delta): {destination} delta={accuracy_delta}m")
+                        if is_green_line:
+                            logger.info(f"  SKIPPED: Unexpected delta={accuracy_delta}m (threshold ±2m)")
                         continue
-                    
+
                     # Check if we already recorded this (only in last 2 minutes to avoid duplicates)
                     # Use a 2-minute window since job runs every 1 minute
                     existing = db.query(LuasAccuracy).filter(
@@ -157,9 +179,10 @@ def calculate_accuracy_from_snapshots():
                         LuasAccuracy.forecasted_minutes == original_forecast_minutes,
                         LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(minutes=2))
                     ).first()
-                    
+
                     if existing:
-                        logger.debug(f"Duplicate accuracy record skipped: {destination}")
+                        if is_green_line:
+                            logger.info(f"  SKIPPED: Duplicate record (already exists in last 2min)")
                         continue
 
                     accuracy_record = LuasAccuracy(
@@ -171,11 +194,12 @@ def calculate_accuracy_from_snapshots():
                         accuracy_delta=accuracy_delta,
                         calculated_at=datetime.utcnow()
                     )
-                    
+
                     db.add(accuracy_record)
                     accuracy_count += 1
                     status = "on time" if accuracy_delta == 0 else f"{abs(accuracy_delta)}m {'early' if accuracy_delta < 0 else 'late'}"
-                    logger.info(f"✓ Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(estimated_actual_minutes))}m ({status})")
+                    line = "GREEN" if is_green_line else "RED"
+                    logger.info(f"✓ {line} LINE Accuracy [{transition_type}]: {destination} ({direction}) at {stop_code} - forecast {original_forecast_minutes}m, actual {int(round(estimated_actual_minutes))}m ({status})")
 
         logger.info(f"Accuracy calculation complete: Analyzed {len(tram_history)} routes, found {accuracy_count} accuracy records")
         logger.info(f"About to commit {accuracy_count} accuracy records...")
@@ -193,17 +217,19 @@ def calculate_accuracy_from_snapshots():
                     logger.error("Rollback also failed")
         else:
             logger.info("No accuracy records to commit this cycle")
-        
+
         db.close()
-    
+        logger.info("=== ACCURACY CALCULATION JOB COMPLETED ===")
+
     except Exception as e:
+        logger.error(f"=== ACCURACY CALCULATION JOB FAILED ===")
+        logger.error(f"Error calculating accuracy: {type(e).__name__}: {e}", exc_info=True)
         if 'db' in locals():
             try:
                 db.rollback()
                 db.close()
             except:
                 pass
-        logger.error(f"Error calculating accuracy: {e}")
 
 
 def poll_luas_and_store():
@@ -258,8 +284,12 @@ def start_luas_polling(scheduler: BackgroundScheduler):
     """
     Start the background polling jobs.
     - Polls the Luas API every 30 seconds for all configured stops
-    - Calculates accuracy every 5 minutes
+    - Calculates accuracy every 1 minute
     """
+    logger.info("=" * 60)
+    logger.info("SCHEDULER STARTUP - Registering background jobs")
+    logger.info("=" * 60)
+
     try:
         scheduler.add_job(
             poll_luas_and_store,
@@ -272,7 +302,7 @@ def start_luas_polling(scheduler: BackgroundScheduler):
         logger.info("✓ Luas polling job scheduled (every 30 seconds)")
     except Exception as e:
         logger.error(f"❌ FAILED to schedule luas_polling: {e}", exc_info=True)
-    
+
     # Add accuracy calculation job
     try:
         scheduler.add_job(
@@ -284,5 +314,14 @@ def start_luas_polling(scheduler: BackgroundScheduler):
             replace_existing=True
         )
         logger.info("✓ Accuracy calculation job scheduled (every 1 minute)")
+
+        # Get the job details to confirm it was added
+        jobs = scheduler.get_jobs()
+        logger.info(f"Total jobs registered: {len(jobs)}")
+        for job in jobs:
+            logger.info(f"  - Job '{job.id}': {job.name}, next run: {job.next_run_time}")
+
     except Exception as e:
         logger.error(f"❌ FAILED to schedule accuracy_calculation: {e}", exc_info=True)
+
+    logger.info("=" * 60)

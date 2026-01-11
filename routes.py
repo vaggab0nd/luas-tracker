@@ -432,23 +432,95 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
         LuasAccuracy.calculated_at >= (datetime.utcnow() - timedelta(hours=24))
     ).scalar()
 
+    # Also check snapshots table for comparison
+    total_snapshots = db.query(func.count(LuasSnapshot.id)).scalar()
+    recent_snapshots = db.query(func.count(LuasSnapshot.id)).filter(
+        LuasSnapshot.recorded_at >= (datetime.utcnow() - timedelta(hours=24))
+    ).scalar()
+
     # Get sample records
     samples = db.query(LuasAccuracy).order_by(desc(LuasAccuracy.calculated_at)).limit(5).all()
 
     return {
-        "total_accuracy_records": total_count,
-        "records_in_last_24h": recent_count,
-        "sample_records": [
-            {
-                "destination": s.destination,
-                "direction": s.direction,
-                "forecasted": s.forecasted_minutes,
-                "actual": s.actual_minutes,
-                "delta": s.accuracy_delta,
-                "calculated_at": s.calculated_at.isoformat()
-            }
-            for s in samples
-        ]
+        "luas_accuracy_table": {
+            "total_records": total_count,
+            "records_in_last_24h": recent_count,
+            "sample_records": [
+                {
+                    "stop_code": s.stop_code,
+                    "destination": s.destination,
+                    "direction": s.direction,
+                    "forecasted": s.forecasted_minutes,
+                    "actual": s.actual_minutes,
+                    "delta": s.accuracy_delta,
+                    "calculated_at": s.calculated_at.isoformat()
+                }
+                for s in samples
+            ]
+        },
+        "luas_snapshots_table": {
+            "total_records": total_snapshots,
+            "records_in_last_24h": recent_snapshots,
+        }
+    }
+
+
+@router.get("/debug/snapshots/transitions")
+async def debug_snapshot_transitions(db: Session = Depends(get_db), stop_code: str = "cab", minutes: int = 30):
+    """
+    Debug endpoint to see forecast transitions for a specific stop.
+    Shows how forecasts change over time to diagnose why accuracy isn't being calculated.
+    """
+    from collections import defaultdict
+
+    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+
+    # Get recent snapshots for this stop
+    snapshots = db.query(LuasSnapshot).filter(
+        LuasSnapshot.stop_code == stop_code,
+        LuasSnapshot.recorded_at >= cutoff_time
+    ).order_by(LuasSnapshot.recorded_at.desc()).all()
+
+    # Group by destination/direction to track tram progression
+    tram_history = defaultdict(list)
+    for snapshot in snapshots:
+        key = (snapshot.destination, snapshot.direction)
+        tram_history[key].append({
+            "forecast_minutes": snapshot.forecast_arrival_minutes,
+            "recorded_at": snapshot.recorded_at.isoformat()
+        })
+
+    # Analyze transitions for each tram route
+    transitions = {}
+    for (dest, direction), history in tram_history.items():
+        # Sort by time (oldest first)
+        history.sort(key=lambda x: x["recorded_at"])
+
+        # Find transitions
+        found_transitions = []
+        for i in range(1, len(history)):
+            prev = history[i-1]["forecast_minutes"]
+            curr = history[i]["forecast_minutes"]
+            if prev != curr:
+                found_transitions.append({
+                    "from": prev,
+                    "to": curr,
+                    "time": history[i]["recorded_at"]
+                })
+
+        transitions[f"{dest} ({direction})"] = {
+            "total_snapshots": len(history),
+            "forecast_range": f"{min(h['forecast_minutes'] for h in history)}-{max(h['forecast_minutes'] for h in history)} minutes",
+            "transitions_found": len(found_transitions),
+            "sample_transitions": found_transitions[:10]
+        }
+
+    return {
+        "stop_code": stop_code,
+        "period_minutes": minutes,
+        "total_snapshots": len(snapshots),
+        "unique_routes": len(tram_history),
+        "routes": transitions
     }
 
 
