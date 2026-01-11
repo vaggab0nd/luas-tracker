@@ -465,6 +465,34 @@ async def debug_accuracy_count(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/debug/accuracy/stops-summary")
+async def debug_accuracy_stops_summary(db: Session = Depends(get_db)):
+    """Quick summary of which stops have accuracy data"""
+    stop_counts = db.query(
+        LuasAccuracy.stop_code,
+        func.count(LuasAccuracy.id).label("count")
+    ).group_by(LuasAccuracy.stop_code).all()
+
+    green_line_stops = {"bro", "cab", "sts", "ran", "san", "bri"}
+    red_line_stops = {"tal", "red", "heu", "jer", "con", "tpt"}
+
+    result = {
+        "green_line": {},
+        "red_line": {},
+        "other": {}
+    }
+
+    for stop, count in stop_counts:
+        if stop in green_line_stops:
+            result["green_line"][stop] = count
+        elif stop in red_line_stops:
+            result["red_line"][stop] = count
+        else:
+            result["other"][stop] = count
+
+    return result
+
+
 @router.get("/debug/snapshots/transitions")
 async def debug_snapshot_transitions(db: Session = Depends(get_db), stop_code: str = "cab", minutes: int = 30):
     """

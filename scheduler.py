@@ -73,15 +73,23 @@ def calculate_accuracy_from_snapshots():
         logger.info(f"Accuracy calculation: Grouped into {len(tram_history)} unique tram routes")
 
         accuracy_count = 0
-        
+
         # Group stops by line for analysis
         red_line_stops = {"tal", "red", "heu", "jer", "con", "tpt"}
         green_line_stops = {"bro", "cab", "sts", "ran", "san", "bri"}
+
+        # Count and LOG each stop type
+        routes_by_stop = {}
+        for (stop, direction, destination) in tram_history.keys():
+            if stop not in routes_by_stop:
+                routes_by_stop[stop] = []
+            routes_by_stop[stop].append(f"{destination} ({direction})")
 
         red_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in red_line_stops)
         green_line_routes = sum(1 for (stop, _, _) in tram_history.keys() if stop in green_line_stops)
 
         logger.info(f"Route breakdown: {red_line_routes} Red Line routes, {green_line_routes} Green Line routes")
+        logger.info(f"Routes by stop: {routes_by_stop}")
 
         # For each tram type, look for ones that "arrived"
         for (stop_code, direction, destination), polls in tram_history.items():
